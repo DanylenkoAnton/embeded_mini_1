@@ -1,111 +1,160 @@
 #include <Arduino.h>
 
-int PIN_OUT = 20;
-int PIN_IN = 6;
+enum class LedState : uint8_t {
+    Off = LOW,
+    On = HIGH
+};
 
-const int threshold = 300;
+enum class SystemMode : uint8_t {
+    Blinking,
+    AlwaysOn,
+    AlwaysOff
+};
 
-int readStabilized(int pin)
-{
-  long sum = 0;
-  const int samples = 16;
-  for (int i = 0; i < samples; i++)
-  {
-    sum += analogRead(pin);
-    delayMicroseconds(50);
-  }
-  return sum / samples;
-}
+struct Config {
+   static constexpr uint8_t ledPin = 13;
+    static constexpr uint8_t buttonPin = 2; // Пін з підтримкою переривань на Uno/Nano
+    static constexpr uint32_t blinkIntervalMs = 500;
+    static constexpr uint32_t telemetryIntervalIterations = 1000;
+    static constexpr uint32_t debounceDelayMs = 50; 
+};
 
-void setup()
-{
-  Serial.begin(115200);
+class Led {
+private:
+    const uint8_t pin;
 
-  pinMode(PIN_OUT, LOW);
-}
+public:
+    explicit constexpr Led(uint8_t pinNumber) : pin(pinNumber) {}
 
-void loop()
-{
-    Serial.println("----------------");
-    int adc = readStabilized(PIN_IN);
-
-    Serial.printf("Light level: %d ", adc);
-
-    if (adc < threshold) {
-        digitalWrite(PIN_OUT, HIGH);
-        Serial.println(" | LIGHT ON");
-    } else {
-        digitalWrite(PIN_OUT, LOW);
-        Serial.println(" | LIGHT OFF");
+    void init() const {
+        pinMode(pin, OUTPUT);
+        set(LedState::Off);
     }
 
-    delay(200);
+    void set(LedState state) const {
+        digitalWrite(pin, static_cast<uint8_t>(state));
+    }
+};
+
+namespace InterruptStorage {
+    volatile bool buttonPressed = false;
+
+    void buttonISR() {
+        buttonPressed = true;
+    }
 }
 
-// const int ledPin = 5;
-// const int ledcChannel1 = 0;
-// const int resolution = 8;
-// const int potPin = 1;
-// int currentFrequency = 1000;
-// int currentDuty = 0;
+class App {
+private:
+    Led led;
+    SystemMode currentMode;
+    LedState currentLedState;
+    
+    uint32_t lastBlinkTime;
+    uint32_t lastDebounceTime;
+    uint32_t lastLoopTime;
+    uint32_t loopIterationCount;
+    uint64_t totalLoopDurationUs;
 
-// int lightValue = 0;
+    void handleButton() {
+        if (!InterruptStorage::buttonPressed) return;
 
-// const int threshold = 600;
-// bool isDark = false;
+        uint32_t currentTime = millis();
+        if ((currentTime - lastDebounceTime) > Config::debounceDelayMs) {
+            switch (currentMode) {
+                case SystemMode::Blinking:
+                    currentMode = SystemMode::AlwaysOn;
+                    break;
+                case SystemMode::AlwaysOn:
+                    currentMode = SystemMode::AlwaysOff;
+                    break;
+                case SystemMode::AlwaysOff:
+                    currentMode = SystemMode::Blinking;
+                    break;
+            }
+            lastDebounceTime = currentTime;
+        }
+        
+        InterruptStorage::buttonPressed = false;
+    }
 
-// int readStabilized(int pin)
-// {
-//   long sum = 0;
-//   const int samples = 16;
-//   for (int i = 0; i < samples; i++)
-//   {
-//     sum += analogRead(pin);
-//     delayMicroseconds(50);
-//   }
-//   return sum / samples;
-// }
+    void updateLed() {
+        switch (currentMode) {
+            case SystemMode::AlwaysOn:
+                led.set(LedState::On);
+                break;
 
-// void setup()
-// {
-//   Serial.begin(115200);
+            case SystemMode::AlwaysOff:
+                led.set(LedState::Off);
+                break;
 
-//   ledcSetup(ledcChannel1, currentFrequency, resolution);
-//   ledcAttachPin(ledPin, ledcChannel1);
-//   ledcWrite(ledcChannel1, 0);
-// }
+            case SystemMode::Blinking:
+                uint32_t currentTime = millis();
+                if (currentTime - lastBlinkTime >= Config::blinkIntervalMs) {
+                    lastBlinkTime = currentTime;
+                    currentLedState = (currentLedState == LedState::On) ? LedState::Off : LedState::On;
+                    led.set(currentLedState);
+                }
+                break;
+        }
+    }
 
-// void loop()
-// {
-//   lightValue = analogRead(photoResistorPin);
+    void calculateTelemetry(uint32_t loopDurationUs) {
+        totalLoopDurationUs += loopDurationUs;
+        loopIterationCount++;
 
-//   Serial.printf("Light level: %d ",lightValue);
-  
-//   if (lightValue < threshold)
-//   {
-//     isDark = true;
-//   }
-//   else
-//   {
-//     isDark = false;
-//   }
+        if (loopIterationCount >= Config::telemetryIntervalIterations) {
+            uint32_t averageTimeNs = static_cast<uint32_t>((totalLoopDurationUs * 1000) / loopIterationCount);
+            
+            Serial.print(F("Avg Superloop Time: "));
+            Serial.print(averageTimeNs);
+            Serial.println(F(" ns"));
 
-//   if (isDark)
-//   {
-//     int potValue = readStabilized(potPin);
-//     Serial.printf(" | Regulation level - %d ", potValue);
-//     currentDuty = map(potValue, 0, 4095, 0, 255);
+            loopIterationCount = 0;
+            totalLoopDurationUs = 0;
+        }
+    }
 
-//     ledcWrite(ledcChannel1, currentDuty);
+public:
+    App() : 
+        led(Config::ledPin), 
+        currentMode(SystemMode::Blinking), 
+        currentLedState(LedState::Off),
+        lastBlinkTime(0), 
+        lastDebounceTime(0), 
+        lastLoopTime(0),
+        loopIterationCount(0), 
+        totalLoopDurationUs(0) {}
 
-//     int dutyPercent = map(currentDuty, 0, 255, 0, 100);
-//     Serial.printf(" | Duty cycle: %d%%\n", dutyPercent);
-//   }
-//   else
-//   {
-//     ledcWrite(ledcChannel1, 0);
-//     Serial.println(" | LED OFF");
-//   }
+    void setup() {
+        Serial.begin(115200);
+        led.init();
 
-//   delay(200);
-// }
+        pinMode(Config::buttonPin, INPUT_PULLUP);
+        attachInterrupt(digitalPinToInterrupt(Config::buttonPin), InterruptStorage::buttonISR, FALLING);
+        
+        lastLoopTime = micros();
+    }
+
+    void loop() {
+        uint32_t startMicros = micros();
+
+        handleButton();
+        updateLed();
+
+        uint32_t endMicros = micros();
+        uint32_t loopDuration = (endMicros >= startMicros) ? (endMicros - startMicros) : (0xFFFFFFFF - startMicros + endMicros);
+        
+        calculateTelemetry(loopDuration);
+    }
+};
+
+App app;
+
+void setup() {
+    app.setup();
+}
+
+void loop() {
+    app.loop();
+}
