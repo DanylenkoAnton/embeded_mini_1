@@ -1,160 +1,123 @@
 #include <Arduino.h>
 
-enum class LedState : uint8_t {
-    Off = LOW,
-    On = HIGH
-};
+// Визначення пінів
+const int RELAY_PIN = 12;     // Пін керування реле
+const int CONTACT_PIN = 14;   // Пін зчитування стану контакту (з INPUT_PULLUP)
 
-enum class SystemMode : uint8_t {
-    Blinking,
-    AlwaysOn,
-    AlwaysOff
-};
+// Змінні для вимірювань (volatile для використання в ISR)
+volatile unsigned long eventTime = 0;
+volatile bool isTriggered = false;
 
-struct Config {
-   static constexpr uint8_t ledPin = 13;
-    static constexpr uint8_t buttonPin = 2; // Пін з підтримкою переривань на Uno/Nano
-    static constexpr uint32_t blinkIntervalMs = 500;
-    static constexpr uint32_t telemetryIntervalIterations = 1000;
-    static constexpr uint32_t debounceDelayMs = 50; 
-};
+unsigned long startTime = 0;
+const int MAX_MEASUREMENTS = 10;
+unsigned long turnOnTimes[MAX_MEASUREMENTS];
+unsigned long turnOffTimes[MAX_MEASUREMENTS];
 
-class Led {
-private:
-    const uint8_t pin;
-
-public:
-    explicit constexpr Led(uint8_t pinNumber) : pin(pinNumber) {}
-
-    void init() const {
-        pinMode(pin, OUTPUT);
-        set(LedState::Off);
-    }
-
-    void set(LedState state) const {
-        digitalWrite(pin, static_cast<uint8_t>(state));
-    }
-};
-
-namespace InterruptStorage {
-    volatile bool buttonPressed = false;
-
-    void buttonISR() {
-        buttonPressed = true;
-    }
+// Обробник апаратного переривання
+void onContactChange() {
+  // Фіксуємо час лише для першого коливання (ігноруємо брязкіт)
+  if (!isTriggered) {
+    eventTime = micros();
+    isTriggered = true;
+  }
 }
 
-class App {
-private:
-    Led led;
-    SystemMode currentMode;
-    LedState currentLedState;
-    
-    uint32_t lastBlinkTime;
-    uint32_t lastDebounceTime;
-    uint32_t lastLoopTime;
-    uint32_t loopIterationCount;
-    uint64_t totalLoopDurationUs;
-
-    void handleButton() {
-        if (!InterruptStorage::buttonPressed) return;
-
-        uint32_t currentTime = millis();
-        if ((currentTime - lastDebounceTime) > Config::debounceDelayMs) {
-            switch (currentMode) {
-                case SystemMode::Blinking:
-                    currentMode = SystemMode::AlwaysOn;
-                    break;
-                case SystemMode::AlwaysOn:
-                    currentMode = SystemMode::AlwaysOff;
-                    break;
-                case SystemMode::AlwaysOff:
-                    currentMode = SystemMode::Blinking;
-                    break;
-            }
-            lastDebounceTime = currentTime;
-        }
-        
-        InterruptStorage::buttonPressed = false;
-    }
-
-    void updateLed() {
-        switch (currentMode) {
-            case SystemMode::AlwaysOn:
-                led.set(LedState::On);
-                break;
-
-            case SystemMode::AlwaysOff:
-                led.set(LedState::Off);
-                break;
-
-            case SystemMode::Blinking:
-                uint32_t currentTime = millis();
-                if (currentTime - lastBlinkTime >= Config::blinkIntervalMs) {
-                    lastBlinkTime = currentTime;
-                    currentLedState = (currentLedState == LedState::On) ? LedState::Off : LedState::On;
-                    led.set(currentLedState);
-                }
-                break;
-        }
-    }
-
-    void calculateTelemetry(uint32_t loopDurationUs) {
-        totalLoopDurationUs += loopDurationUs;
-        loopIterationCount++;
-
-        if (loopIterationCount >= Config::telemetryIntervalIterations) {
-            uint32_t averageTimeNs = static_cast<uint32_t>((totalLoopDurationUs * 1000) / loopIterationCount);
-            
-            Serial.print(F("Avg Superloop Time: "));
-            Serial.print(averageTimeNs);
-            Serial.println(F(" ns"));
-
-            loopIterationCount = 0;
-            totalLoopDurationUs = 0;
-        }
-    }
-
-public:
-    App() : 
-        led(Config::ledPin), 
-        currentMode(SystemMode::Blinking), 
-        currentLedState(LedState::Off),
-        lastBlinkTime(0), 
-        lastDebounceTime(0), 
-        lastLoopTime(0),
-        loopIterationCount(0), 
-        totalLoopDurationUs(0) {}
-
-    void setup() {
-        Serial.begin(115200);
-        led.init();
-
-        pinMode(Config::buttonPin, INPUT_PULLUP);
-        attachInterrupt(digitalPinToInterrupt(Config::buttonPin), InterruptStorage::buttonISR, FALLING);
-        
-        lastLoopTime = micros();
-    }
-
-    void loop() {
-        uint32_t startMicros = micros();
-
-        handleButton();
-        updateLed();
-
-        uint32_t endMicros = micros();
-        uint32_t loopDuration = (endMicros >= startMicros) ? (endMicros - startMicros) : (0xFFFFFFFF - startMicros + endMicros);
-        
-        calculateTelemetry(loopDuration);
-    }
-};
-
-App app;
-
 void setup() {
-    app.setup();
+  Serial.begin(115200);
+  delay(1000);
+  
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // Початковий стан — вимкнено
+  
+  // Налаштування піна з вбудованим підтягуючим резистором
+  pinMode(CONTACT_PIN, INPUT_PULLUP);
+  
+  Serial.println("=== Старт вимірювання часу спрацювання реле ===");
 }
 
 void loop() {
-    app.loop();
+  // --- ТЕСТ 1: Вимірювання часу УВІМКНЕННЯ (Turn-On Time) ---
+  Serial.println("\n--- Запуск 10 вимірювань увімкнення ---");
+  for (int i = 0; i < MAX_MEASUREMENTS; i++) {
+    isTriggered = false;
+    // Очікуємо стабілізації перед тестом
+    delay(200); 
+    
+    // Налаштовуємо переривання на спад (FALLING), бо COM з'єднаний з GND
+    attachInterrupt(digitalPinToInterrupt(CONTACT_PIN), onContactChange, FALLING);
+    
+    startTime = micros();
+    digitalWrite(RELAY_PIN, HIGH); // Вмикаємо реле
+    
+    // Очікуємо на спрацювання переривання (з таймаутом 100 мс на випадок помилки)
+    unsigned long timeout = millis();
+    while (!isTriggered && (millis() - timeout < 100)) {
+      yield(); 
+    }
+    
+    detachInterrupt(digitalPinToInterrupt(CONTACT_PIN));
+    
+    if (isTriggered) {
+      turnOnTimes[i] = eventTime - startTime;
+      Serial.printf("Увімкнення %d: %lu мкс (%.2f мс)\n", i + 1, turnOnTimes[i], turnOnTimes[i] / 1000.0);
+    } else {
+      Serial.printf("Увімкнення %d: Помилка (Таймаут)\n", i + 1);
+      turnOnTimes[i] = 0;
+    }
+  }
+
+  // --- ТЕСТ 2: Вимірювання часу ВИМКНЕННЯ (Turn-Off Time) ---
+  Serial.println("\n--- Запуск 10 вимірювань вимкнення ---");
+  for (int i = 0; i < MAX_MEASUREMENTS; i++) {
+    isTriggered = false;
+    delay(200); 
+    
+    // Налаштовуємо на зростання (RISING), бо при розмиканні вбудований pull-up підніме пін до 3.3V
+    attachInterrupt(digitalPinToInterrupt(CONTACT_PIN), onContactChange, RISING);
+    
+    startTime = micros();
+    digitalWrite(RELAY_PIN, LOW); // Вимикаємо реле
+    
+    unsigned long timeout = millis();
+    while (!isTriggered && (millis() - timeout < 100)) {
+      yield();
+    }
+    
+    detachInterrupt(digitalPinToInterrupt(CONTACT_PIN));
+    
+    if (isTriggered) {
+      turnOffTimes[i] = eventTime - startTime;
+      Serial.printf("Вимкнення %d: %lu мкс (%.2f мс)\n", i + 1, turnOffTimes[i], turnOffTimes[i] / 1000.0);
+    } else {
+      Serial.printf("Вимкнення %d: Помилка (Таймаут)\n", i + 1);
+      turnOffTimes[i] = 0;
+    }
+  }
+
+  // --- Обчислення та виведення середнього значення ---
+  unsigned long totalOn = 0;
+  unsigned long totalOff = 0;
+  int validOnCount = 0;
+  int validOffCount = 0;
+
+  for (int i = 0; i < MAX_MEASUREMENTS; i++) {
+    if (turnOnTimes[i] > 0) { totalOn += turnOnTimes[i]; validOnCount++; }
+    if (turnOffTimes[i] > 0) { totalOff += turnOffTimes[i]; validOffCount++; }
+  }
+
+  Serial.println("\n================ РЕЗУЛЬТАТИ ================");
+  if (validOnCount > 0) {
+    float avgOn = (float)totalOn / validOnCount;
+    Serial.printf("Середній час УВІМКНЕННЯ: %.2f мкс (%.2f мс)\n", avgOn, avgOn / 1000.0);
+  }
+  if (validOffCount > 0) {
+    float avgOff = (float)totalOff / validOffCount;
+    Serial.printf("Середній час ВИМКНЕННЯ: %.2f мкс (%.2f мс)\n", avgOff, avgOff / 1000.0);
+  }
+  Serial.println("============================================");
+
+  // Зупиняємо виконання, щоб результати не зациклювалися в Serial Monitor
+  while (true) {
+    delay(1000);
+  }
 }
