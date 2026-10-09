@@ -10,7 +10,7 @@ constexpr uint32_t I2C_FREQ_HZ        = 400000;
 constexpr uint8_t  BME_ADDR_PRIMARY   = 0x76;
 constexpr uint8_t  BME_ADDR_SECONDARY = 0x77;
 constexpr float    SEA_LEVEL_HPA      = 1013.25f;
-constexpr uint32_t SAMPLE_PERIOD_MS   = 2000;
+constexpr uint32_t SAMPLE_PERIOD_US   = 1000000;  // 1 с
 constexpr uint32_t SERIAL_BAUD        = 115200;
 
 // Распиновка UART для модуля GPS ATGM336H
@@ -24,6 +24,17 @@ bool sensorReady = false;
 
 // Используем аппаратный Serial1 для работы с GPS
 HardwareSerial gpsSerial(1);
+
+// Аппаратный таймер + флаг, выставляемый из ISR
+hw_timer_t *sampleTimer = nullptr;
+volatile bool sampleTick = false;
+
+// ISR должен быть максимально коротким: просто выставляем флаг.
+// Работа с I2C/Serial из прерывания недопустима, фактический опрос
+// датчиков выполняется в loop() при обнаружении флага.
+void IRAM_ATTR onSampleTimer() {
+  sampleTick = true;
+}
 
 void i2cScan() {
   Serial.printf("I2C scan on SDA=%u SCL=%u...\n", SDA_PIN, SCL_PIN);
@@ -51,7 +62,7 @@ bool trySensorInit() {
   return true;
 }
 
-void printGPS() {
+void readGPS() {
 // --- Данные геолокации (GPS / BDS) ---
   const uint32_t sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
   const uint32_t hdop100 = gps.hdop.isValid() ? gps.hdop.value() : 9999;  // в сотых
@@ -80,7 +91,7 @@ void printGPS() {
   }
 }
 
-void printBME() {
+void readBME() {
   bme.takeForcedMeasurement();
 
   float t = bme.readTemperature();
@@ -96,13 +107,6 @@ void printBME() {
   Serial.printf("T=%.2f *C  H=%.2f %%  P=%.2f hPa  Alt=%.2f m\n", t, h, p, a);
 }
 
-void printReadings() {
-  printBME();
-  printGPS();
-  
-  Serial.println("----------------");
-}
-
 void setup() {
   Serial.begin(SERIAL_BAUD);
   uint32_t t0 = millis();
@@ -114,6 +118,14 @@ void setup() {
   // Инициализация UART для GPS (стандартная скорость ATGM336H — 9600 бод)
   gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.println(F("Интерфейс GPS запущен на пинах RX:6, TX:7. Ожидание спутников..."));
+
+  // Таймер 0, делитель 80 => тик 1 МГц, тревога каждую секунду с автоперезагрузкой
+  sampleTimer = timerBegin(0, 80, true);
+  // edge=false: ESP32-C3 поддерживает только уровневое прерывание,
+  // передача true вызовет лишний log_w из HAL без изменения поведения
+  timerAttachInterrupt(sampleTimer, &onSampleTimer, false);
+  timerAlarmWrite(sampleTimer, SAMPLE_PERIOD_US, true);
+  timerAlarmEnable(sampleTimer);
 }
 
 void loop() {
@@ -124,9 +136,8 @@ void loop() {
     gps.encode(gpsSerial.read());
   }
 
-  static uint32_t last = 0;
-  if (millis() - last < SAMPLE_PERIOD_MS) return;
-  last = millis();
+  if (!sampleTick) return;
+  sampleTick = false;
 
   if (!sensorReady) {
     i2cScan();
@@ -139,5 +150,7 @@ void loop() {
     return;
   }
 
-  printReadings();
+  readBME();
+  readGPS();
+  Serial.println("----------------");
 }
