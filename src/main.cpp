@@ -15,7 +15,7 @@ void IRAM_ATTR buttonISR() {
 }
 
 void buttonStateSubscriber() {
-    if(BUTTON_PUSHED) {
+    if(BUTTON_PUSHED && previousPushTime + DEBOUNCE_MS < millis()) {
         counter++;
         previousPushTime = millis();
         BUTTON_PUSHED = false;
@@ -41,6 +41,8 @@ unsigned long lastPollAt = 0;
 void setup() {
     Serial.begin(115200);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 }
 
 void pollButton() {
@@ -85,10 +87,8 @@ void pollButton() {
 }
 
 void loop() {
-    // pollButton();
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
-
     buttonStateSubscriber();
+    // pollButton();
 
     // Serial.println(counter);
 }
