@@ -87,10 +87,10 @@ void loop() {
 }
 
 /*
-    Method        | Additional counts | Delay   | Complexity | Comment
-    No Debounce   | 1-4               | None.   | Easy.      | This is easy implementing but there are additional triggers
-    With Debounce | interaction ended | None.   | Easy.      | Is easy implementing and more accurate than previous method
-    State Based.  | 0                 | None    | Medium.    | Totally correct count but small delay exists
-    Polling FSM   | 0                 | ~50ms   | Medium.    | No ISR, 4-state FSM debounces press & release, deterministic timing
-    Hardware RC   | 1(0 for 3 and 4). | None.   | Hard.      | It works with perfect accuracy, but additional hardware is needed
+    Method        | Additional counts | Delay                                | Complexity | Comment
+    No Debounce   | 1-4               | None.                                | Easy.      | This is easy implementing but there are additional triggers
+    With Debounce | interaction ended | None.                                | Easy.      | Is easy implementing and more accurate than previous method
+    State Based.  | 0                 | None                                 | Medium.    | Totally correct count but small delay exists
+    Polling FSM   | 0                 | ~50ms                                | Medium.    | No ISR, 4-state FSM debounces press & release, deterministic timing
+    Hardware RC   | 1(0 for 3 and 4). | None. (just when capacitor is empty) | Hard.      | It works with perfect accuracy, but additional hardware is needed
 */
