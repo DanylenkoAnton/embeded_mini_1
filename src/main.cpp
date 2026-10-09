@@ -39,7 +39,7 @@ public:
 namespace InterruptStorage {
     volatile bool buttonPressed = false;
 
-    void buttonISR() {
+    void IRAM_ATTR buttonISR() {
         buttonPressed = true;
     }
 }
