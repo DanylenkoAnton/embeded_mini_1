@@ -1,121 +1,125 @@
 #include <Arduino.h>
 
-// Визначення пінів
-const int RELAY_PIN = 12;     // Пін керування реле
-const int CONTACT_PIN = 14;   // Пін зчитування стану контакту (з INPUT_PULLUP)
+// --- Піни -------------------------------------------------------------------
+const int RELAY_PIN   = 6;   // Пін керування реле (через транзисторний ключ)
+const int CONTACT_PIN = 4;   // Пін зчитування стану контакту (INPUT_PULLUP)
+                             // Вимагає COM реле -> GND, NO реле -> CONTACT_PIN.
 
-// Змінні для вимірювань (volatile для використання в ISR)
-volatile unsigned long eventTime = 0;
-volatile bool isTriggered = false;
+// --- Параметри вимірювання --------------------------------------------------
+const int           MAX_MEASUREMENTS = 10;
+const unsigned long RELAY_TIMEOUT_MS = 500;  // максимальний очікуваний час спрацювання
+const unsigned long RELAY_SETTLE_MS  = 700;  // пауза між вимірюваннями
 
-unsigned long startTime = 0;
-const int MAX_MEASUREMENTS = 10;
+// --- Внутрішній стан --------------------------------------------------------
+volatile unsigned long eventTime     = 0;
+volatile bool          isTriggered   = false;
+volatile int           expectedLevel = LOW;  // рівень CONTACT_PIN, якого чекаємо
+
 unsigned long turnOnTimes[MAX_MEASUREMENTS];
 unsigned long turnOffTimes[MAX_MEASUREMENTS];
 
-void onContactChange() {
-  if (!isTriggered) {
-    eventTime = micros();
+// Один-єдиний ISR на CHANGE, без detach/re-attach в циклі.
+// Напрям фронту визначаємо програмно — приймаємо лише той рівень,
+// який зараз чекаємо (expectedLevel).
+void IRAM_ATTR onContactChange() {
+  if (isTriggered) return;
+  if (digitalRead(CONTACT_PIN) == expectedLevel) {
+    eventTime   = micros();
     isTriggered = true;
   }
 }
 
+// Виконує один вимір часу спрацювання реле.
+//   prepLevel     — стан RELAY_PIN до вимірювання (протилежний цільовому)
+//   triggerLevel  — рівень, у який ми перемикаємо RELAY_PIN для старту вимірювання
+//   expectedPinLv — очікуваний рівень на CONTACT_PIN після спрацювання
+// Повертає тривалість в мікросекундах, або 0 — якщо був таймаут.
+unsigned long measureRelayDelay(int prepLevel, int triggerLevel, int expectedPinLv) {
+  digitalWrite(RELAY_PIN, prepLevel);
+  delay(RELAY_SETTLE_MS);
+
+  expectedLevel = expectedPinLv;
+  isTriggered   = false;
+
+  const unsigned long startTime = micros();
+  digitalWrite(RELAY_PIN, triggerLevel);
+
+  const unsigned long t0 = millis();
+  while (!isTriggered && (millis() - t0 < RELAY_TIMEOUT_MS)) {
+    yield();
+  }
+
+  return isTriggered ? (eventTime - startTime) : 0;
+}
+
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  
+  delay(500);
+
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW); // Початковий стан — вимкнено
-  
-  // Налаштування піна з вбудованим підтягуючим резистором
+  digitalWrite(RELAY_PIN, LOW);
   pinMode(CONTACT_PIN, INPUT_PULLUP);
-  
+
+  attachInterrupt(digitalPinToInterrupt(CONTACT_PIN), onContactChange, CHANGE);
+
   Serial.println("=== Старт вимірювання часу спрацювання реле ===");
+  Serial.flush();
 }
 
 void loop() {
-  // --- ТЕСТ 1: Вимірювання часу УВІМКНЕННЯ (Turn-On Time) ---
-  Serial.println("\n--- Запуск 10 вимірювань увімкнення ---");
+  // --- ТЕСТ 1: Вимірювання часу УВІМКНЕННЯ ---
+  Serial.println("\n--- 10 вимірювань УВІМКНЕННЯ ---");
+  Serial.flush();
   for (int i = 0; i < MAX_MEASUREMENTS; i++) {
-    isTriggered = false;
-    // Очікуємо стабілізації перед тестом
-    delay(200); 
-    
-    // Налаштовуємо переривання на спад (FALLING), бо COM з'єднаний з GND
-    attachInterrupt(digitalPinToInterrupt(CONTACT_PIN), onContactChange, FALLING);
-    
-    startTime = micros();
-    digitalWrite(RELAY_PIN, HIGH); // Вмикаємо реле
-    
-    // Очікуємо на спрацювання переривання (з таймаутом 100 мс на випадок помилки)
-    unsigned long timeout = millis();
-    while (!isTriggered && (millis() - timeout < 100)) {
-      yield(); 
-    }
-    
-    detachInterrupt(digitalPinToInterrupt(CONTACT_PIN));
-    
-    if (isTriggered) {
-      turnOnTimes[i] = eventTime - startTime;
-      Serial.printf("Увімкнення %d: %lu мкс (%.2f мс)\n", i + 1, turnOnTimes[i], turnOnTimes[i] / 1000.0);
+    turnOnTimes[i] = measureRelayDelay(LOW, HIGH, LOW);
+    if (turnOnTimes[i] > 0) {
+      Serial.printf("Увімкнення %2d: %lu мкс (%.2f мс)\n",
+                    i + 1, turnOnTimes[i], turnOnTimes[i] / 1000.0);
     } else {
-      Serial.printf("Увімкнення %d: Помилка (Таймаут)\n", i + 1);
-      turnOnTimes[i] = 0;
+      Serial.printf("Увімкнення %2d: Помилка (Таймаут)\n", i + 1);
     }
+    Serial.flush();
   }
 
-  // --- ТЕСТ 2: Вимірювання часу ВИМКНЕННЯ (Turn-Off Time) ---
-  Serial.println("\n--- Запуск 10 вимірювань вимкнення ---");
+  // --- ТЕСТ 2: Вимірювання часу ВИМКНЕННЯ ---
+  Serial.println("\n--- 10 вимірювань ВИМКНЕННЯ ---");
+  Serial.flush();
   for (int i = 0; i < MAX_MEASUREMENTS; i++) {
-    isTriggered = false;
-    delay(200); 
-    
-    // Налаштовуємо на зростання (RISING), бо при розмиканні вбудований pull-up підніме пін до 3.3V
-    attachInterrupt(digitalPinToInterrupt(CONTACT_PIN), onContactChange, RISING);
-    
-    startTime = micros();
-    digitalWrite(RELAY_PIN, LOW); // Вимикаємо реле
-    
-    unsigned long timeout = millis();
-    while (!isTriggered && (millis() - timeout < 100)) {
-      yield();
-    }
-    
-    detachInterrupt(digitalPinToInterrupt(CONTACT_PIN));
-    
-    if (isTriggered) {
-      turnOffTimes[i] = eventTime - startTime;
-      Serial.printf("Вимкнення %d: %lu мкс (%.2f мс)\n", i + 1, turnOffTimes[i], turnOffTimes[i] / 1000.0);
+    turnOffTimes[i] = measureRelayDelay(HIGH, LOW, HIGH);
+    if (turnOffTimes[i] > 0) {
+      Serial.printf("Вимкнення %2d: %lu мкс (%.2f мс)\n",
+                    i + 1, turnOffTimes[i], turnOffTimes[i] / 1000.0);
     } else {
-      Serial.printf("Вимкнення %d: Помилка (Таймаут)\n", i + 1);
-      turnOffTimes[i] = 0;
+      Serial.printf("Вимкнення %2d: Помилка (Таймаут)\n", i + 1);
     }
+    Serial.flush();
   }
 
-  // --- Обчислення та виведення середнього значення ---
-  unsigned long totalOn = 0;
-  unsigned long totalOff = 0;
-  int validOnCount = 0;
-  int validOffCount = 0;
-
+  // --- Підсумки ---
+  unsigned long totalOn = 0, totalOff = 0;
+  int validOnCount = 0, validOffCount = 0;
   for (int i = 0; i < MAX_MEASUREMENTS; i++) {
-    if (turnOnTimes[i] > 0) { totalOn += turnOnTimes[i]; validOnCount++; }
+    if (turnOnTimes[i]  > 0) { totalOn  += turnOnTimes[i];  validOnCount++;  }
     if (turnOffTimes[i] > 0) { totalOff += turnOffTimes[i]; validOffCount++; }
   }
 
   Serial.println("\n================ РЕЗУЛЬТАТИ ================");
   if (validOnCount > 0) {
-    float avgOn = (float)totalOn / validOnCount;
-    Serial.printf("Середній час УВІМКНЕННЯ: %.2f мкс (%.2f мс)\n", avgOn, avgOn / 1000.0);
+    const float avgOn = (float)totalOn / validOnCount;
+    Serial.printf("Середній час УВІМКНЕННЯ: %.2f мкс (%.2f мс), валідних %d/%d\n",
+                  avgOn, avgOn / 1000.0, validOnCount, MAX_MEASUREMENTS);
+  } else {
+    Serial.println("Середній час УВІМКНЕННЯ: немає валідних вимірювань");
   }
   if (validOffCount > 0) {
-    float avgOff = (float)totalOff / validOffCount;
-    Serial.printf("Середній час ВИМКНЕННЯ: %.2f мкс (%.2f мс)\n", avgOff, avgOff / 1000.0);
+    const float avgOff = (float)totalOff / validOffCount;
+    Serial.printf("Середній час ВИМКНЕННЯ: %.2f мкс (%.2f мс), валідних %d/%d\n",
+                  avgOff, avgOff / 1000.0, validOffCount, MAX_MEASUREMENTS);
+  } else {
+    Serial.println("Середній час ВИМКНЕННЯ: немає валідних вимірювань");
   }
   Serial.println("============================================");
+  Serial.flush();
 
-  // Зупиняємо виконання, щоб результати не зациклювалися в Serial Monitor
-  while (true) {
-    delay(1000);
-  }
+  while (true) { delay(1000); }
 }
