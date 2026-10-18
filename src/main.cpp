@@ -57,8 +57,6 @@ static inline void fanWriteLeds(bool on) {
 // без участия loop() или FreeRTOS-задач.
 static void IRAM_ATTR onFanTimer() {
   fanIsOn = !fanIsOn;
-  fanWritePin(fanIsOn);
-  fanWriteLeds(fanIsOn);
   if (fanIsOn) fanCycleCount++;  // считаем каждый вход в ON-фазу
   const uint64_t next_us = (fanIsOn ? FAN_ON_DURATION_MS : FAN_OFF_DURATION_MS) * 1000ULL;
   timerAlarmWrite(fanTimer, next_us, true);
