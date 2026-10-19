@@ -142,6 +142,8 @@ void loop() {
   // Логика вентилятора полностью живёт в ISR; loop лишь печатает смену состояния.
   if (fanStateDirty) {
     fanStateDirty = false;
+    fanWritePin(fanIsOn);
+    fanWriteLeds(fanIsOn);
     logStateChange();
   }
 }
