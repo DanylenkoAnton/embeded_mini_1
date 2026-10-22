@@ -9,8 +9,18 @@
 #include "gps.h"
 #include "gsm.h"
 
-static TinyGsmClient tcpClient(modem);
-static PubSubClient mqtt(tcpClient);
+// Lazy-init через функции-локальные статики: гарантирует, что tcpClient
+// сконструируется ПОСЛЕ modem (из другого TU). Без этого — SIOF: если
+// линкер инициализирует mqtt_client.cpp раньше gsm.cpp, конструктор modem
+// обнуляет sockets[], затирая запись tcpClient → URC'ы MQTT не ловятся.
+static TinyGsmClient& tcp() {
+  static TinyGsmClient instance(modem);
+  return instance;
+}
+static PubSubClient& mqttClient() {
+  static PubSubClient instance(tcp());
+  return instance;
+}
 
 bool mqttSetup() {
   // 1. Поднимаем GPRS сессию, если ещё не открыта
@@ -24,16 +34,16 @@ bool mqttSetup() {
   }
 
   // 2. Конфигурируем MQTT-клиент (идемпотентно)
-  mqtt.setServer(MQTT_ADDRES, MQTT_TCP_PORT);
-  mqtt.setKeepAlive(MQTT_KEEP_ALIVE_S);
-  mqtt.setBufferSize(MQTT_BUFFER_SIZE);
+  mqttClient().setServer(MQTT_ADDRES, MQTT_TCP_PORT);
+  mqttClient().setKeepAlive(MQTT_KEEP_ALIVE_S);
+  mqttClient().setBufferSize(MQTT_BUFFER_SIZE);
 
   // 3. Подключаемся к брокеру
-  if (!mqtt.connected()) {
+  if (!mqttClient().connected()) {
     Serial.print(F("[MQTT] Подключение к ")); Serial.print(MQTT_ADDRES);
     Serial.print(F(":")); Serial.println(MQTT_TCP_PORT);
-    if (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
-      Serial.print(F("[MQTT] ❌ Ошибка подключения, state=")); Serial.println(mqtt.state());
+    if (!mqttClient().connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
+      Serial.print(F("[MQTT] ❌ Ошибка подключения, state=")); Serial.println(mqttClient().state());
       // state коды: -4 timeout, -3 lost conn, -2 failed, -1 disconnected,
       //             1 wrong proto, 2 bad client id, 3 unavailable, 4 bad creds, 5 unauthorized
       return false;
@@ -47,10 +57,10 @@ bool mqttSetup() {
              MQTT_CLIENT_ID, (unsigned long)millis());
     Serial.print(F("[MQTT] TEST -> ")); Serial.print(MQTT_TOPIC);
     Serial.print(F(" ")); Serial.println(hello);
-    if (mqtt.publish(MQTT_TOPIC, hello)) {
+    if (mqttClient().publish(MQTT_TOPIC, hello)) {
       Serial.println(F("[MQTT] ✅ Тестовое сообщение отправлено."));
     } else {
-      Serial.print(F("[MQTT] ❌ Ошибка отправки тестового сообщения, state=")); Serial.println(mqtt.state());
+      Serial.print(F("[MQTT] ❌ Ошибка отправки тестового сообщения, state=")); Serial.println(mqttClient().state());
     }
   }
 
@@ -83,13 +93,13 @@ bool publishSensorData() {
 
   Serial.print(F("[MQTT] -> ")); Serial.print(MQTT_TOPIC);
   Serial.print(F(" ")); Serial.println(payload);
-  if (!mqtt.publish(MQTT_TOPIC, payload)) {
-    Serial.print(F("[MQTT] ❌ Ошибка публикации, state=")); Serial.println(mqtt.state());
+  if (!mqttClient().publish(MQTT_TOPIC, payload)) {
+    Serial.print(F("[MQTT] ❌ Ошибка публикации, state=")); Serial.println(mqttClient().state());
     return false;
   }
   return true;
 }
 
 void mqttLoop() {
-  if (mqtt.connected()) mqtt.loop();
+  if (mqttClient().connected()) mqttClient().loop();
 }

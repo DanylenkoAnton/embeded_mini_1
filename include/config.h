@@ -72,7 +72,8 @@ constexpr uint32_t GSM_AUTOBAUD_DELAY_MS       = 300;
 
 // Таймауты TinyGSM
 constexpr uint32_t GSM_TEST_AT_TIMEOUT_MS      = 5000;
-constexpr uint32_t GSM_NETWORK_WAIT_TIMEOUT_MS = 60000L;
+constexpr uint32_t GSM_SIGNAL_WAIT_MS          = 20000L;   // ждём появления сигнала после reset
+constexpr uint32_t GSM_NETWORK_WAIT_TIMEOUT_MS = 120000L;  // CREG может долго висеть в 2/3 на lifecell
 
 // Качество сигнала (CSQ): 99 — спецзначение «нет сигнала»; шкала 0..31
 constexpr int      GSM_CSQ_NO_SIGNAL           = 99;
